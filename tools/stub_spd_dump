@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+# stub_spd_dump.sh — OFFLINE TEST STUB (release edition). Emulates spd_dump
+# sessions against a state directory ($STUB_STATE, default ./stub_state,
+# seeded from official/ AND from the shipped GPT, fdl/pgpt.bin). NOT a device
+# tool. Emulates:
+#   w part FILE        -> stores FILE into state (w miscdata also clears the
+#                         unlock marker — the flag lives in that partition)
+#                         FIDELITY: w l_fixnv* goes through the real tool's
+#                         NV-item protocol (crc/cs checked by the device; byte
+#                         stream on flash != file), so the stub does NOT make
+#                         the stored state byte-equal the file. w l_runtimenv*
+#                         ERASES the partition in the real tool — modeled.
+#                         w calinv is silently skipped — modeled.
+#   e part             -> marks state partition erased (reads return garbage)
+#   r part             -> writes <part>.bin into CWD (garbage if erased)
+#                         FIDELITY: r of any *nv1* name is redirected to the
+#                         *nv2* mirror from offset 0x200 (real tool does this
+#                         in dump_partition) — the field-caught behavior.
+#   read_part p off sz out -> writes slice of miscdata state into CWD file
+#   exec_addr 0xXXXX   -> enforces the custom_exec_no_verify_XXXX.bin CWD rule
+# On the first named-partition read it saves the GPT like the real tool:
+# pgpt.bin +
+# partition_<ts>.xml in CWD. All partitions from the GPT are seeded (zero
+# content unless an official/ dump exists), capped at STUB_MAX_PART bytes
+# (default 64 MiB) so huge partitions stay test-sized.
+# STUB_NO_DEVICE=1 -> simulates "find port failed" (no device attached).
+set -u
+STATE="${STUB_STATE:-$PWD/stub_state}"
+STUB_MAX_PART="${STUB_MAX_PART:-67108864}"
+mkdir -p "$STATE"
+
+# ---- seed from official/ where dumps exist (mimic a STOCK phone) -----------
+[ -f "$STATE/splloader" ] || cp official/splloader.bin "$STATE/splloader" 2>/dev/null || true
+[ -f "$STATE/uboot_a" ]   || cp official/uboot.bin    "$STATE/uboot_a"   2>/dev/null || true
+[ -f "$STATE/uboot_b" ]   || cp official/uboot.bin    "$STATE/uboot_b"   2>/dev/null || true
+[ -f "$STATE/misc" ]      || cp official/misc.bin     "$STATE/misc"      2>/dev/null || true
+[ -f "$STATE/miscdata" ]  || python3 -c "open('$STATE/miscdata','wb').write(b'\x00'*0x2200)"
+[ -f "$STATE/init_boot_a" ] || cp official/init_boot_a.bin "$STATE/init_boot_a" 2>/dev/null || true
+[ -f "$STATE/init_boot_b" ] || cp official/init_boot_b.bin "$STATE/init_boot_b" 2>/dev/null || true
+[ -f "$STATE/boot_a" ]      || cp official/boot_a.bin      "$STATE/boot_a"      2>/dev/null || true
+[ -f "$STATE/boot_b" ]      || cp official/boot_b.bin      "$STATE/boot_b"      2>/dev/null || true
+[ -f "$STATE/vbmeta_a" ]    || cp official/vbmeta_a.bin    "$STATE/vbmeta_a"    2>/dev/null || true
+[ -f "$STATE/vbmeta_b" ]    || cp official/vbmeta_b.bin    "$STATE/vbmeta_b"    2>/dev/null || true
+
+# ---- seed every remaining GPT partition as a zero file ----------------------
+# The GPT this kit ships (fdl/pgpt.bin) is the phone's own saved table, so the
+# stub's partition set always matches the device's.
+if [ -f fdl/pgpt.bin ] && [ ! -f "$STATE/.gpt_seeded" ]; then
+python3 - "$STATE" "$STUB_MAX_PART" <<'PY'
+import os, struct, sys
+state, cap = sys.argv[1], int(sys.argv[2])
+g = open("fdl/pgpt.bin", "rb").read()
+assert g[512:520] == b"EFI PART", "pgpt.bin is not a GPT"
+ent_lba, n_ent, ent_sz = struct.unpack_from("<Q", g, 512 + 0x48)[0], \
+    struct.unpack_from("<I", g, 512 + 0x50)[0], \
+    struct.unpack_from("<I", g, 512 + 0x54)[0]
+for i in range(n_ent):
+    e = g[ent_lba * 512 + i * ent_sz:][:ent_sz]
+    if e[:16] == b"\x00" * 16:
+        continue
+    first, last = struct.unpack_from("<Q", e, 32)[0], struct.unpack_from("<Q", e, 40)[0]
+    name = e[56:56 + 72].decode("utf-16-le").split("\x00")[0]
+    sz = min((last - first + 1) * 512, cap)
+    p = os.path.join(state, name)
+    if not os.path.exists(p):
+        open(p, "wb").write(b"\x00" * sz)
+PY
+touch "$STATE/.gpt_seeded"
+fi
+
+echo "branch:main, sha1:stub"
+[ "${STUB_NO_DEVICE:-0}" = "1" ] && { echo "Waiting for dl_diag connection (300s)"; echo "find port failed"; exit 1; }
+echo "Waiting for dl_diag connection (300s)"
+echo "libusb_control_transfer ok"
+echo "CHECK_BAUD bootrom"
+echo 'BSL_REP_VER: "SPRD3\0"'
+echo "CMD_CONNECT bootrom"
+
+execmode=0; gpt_saved=0; i=0
+while [ $i -lt $# ]; do
+  a="${!i}"
+  case "$a" in
+    --wait) i=$((i+2)); continue ;;
+    reset|poweroff)
+      # fidelity with the REAL tool: exit commands (reset/poweroff) reboot the
+      # device and TERMINATE argument processing. A session that LEADS with
+      # reset silently skips every op after it — the field bug this mimics.
+      # Ops already processed in this session are done; the phone reboots.
+      echo "stub session end (device rebooted — exit command reached)"
+      exit 0 ;;
+    exec_addr)
+      addr="${*:$((i+1)):1}"; pf="custom_exec_no_verify_${addr#0x}.bin"
+      [ -f "$pf" ] || { echo "$pf does not exist."; exit 1; }
+      echo "current exec_addr is $addr"; i=$((i+2)); continue ;;
+    fdl) echo "SEND ${*:$((i+1)):1} to ${*:$((i+2)):1}"; i=$((i+3)); continue ;;
+    exec)
+      execmode=1
+      # real tool: this is where it starts waiting for the download-mode port
+      echo "Waiting for dl_diag connection (300s)"
+      i=$((i+1)); continue ;;
+  esac
+  if [ "$execmode" = "1" ]; then
+    case "$a" in
+      r)
+        part="${*:$((i+1)):1}"
+        # real tool: the standard GPT table is saved AUTOMATICALLY on the
+        # first named-partition read (partition_list -> dump user_partition
+        # -> pgpt.bin), once per process — there is no 'pgpt' partition.
+        if [ "$gpt_saved" = "0" ] && [ -f fdl/pgpt.bin ]; then
+          # test-world consistency: the saved table declares each partition's
+          # size from its STATE file when one exists (official-seeded images
+          # keep their real bytes so byte-compares against official/ work),
+          # else capped at STUB_MAX_PART. The kit's size-verified resume gate
+          # then matches this world exactly. A REAL tool run saves the real
+          # table untouched; all of this is the stub's world only.
+          python3 - fdl/pgpt.bin pgpt.bin "$STATE" "$STUB_MAX_PART" <<'PY'
+import os, struct, sys
+src, dst, state, cap = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+g = bytearray(open(src, "rb").read())
+ent_lba = struct.unpack_from("<Q", g, 512 + 0x48)[0]
+n_ent   = struct.unpack_from("<I", g, 512 + 0x50)[0]
+ent_sz  = struct.unpack_from("<I", g, 512 + 0x54)[0]
+for i in range(n_ent):
+    off = ent_lba * 512 + i * ent_sz
+    e = g[off:off + ent_sz]
+    if e[:16] == b"\x00" * 16:
+        continue
+    first, last = struct.unpack_from("<Q", e, 32)[0], struct.unpack_from("<Q", e, 40)[0]
+    name = e[56:56 + 72].decode("utf-16-le").split("\x00")[0]
+    p = os.path.join(state, name)
+    if os.path.exists(p):
+        sz = os.path.getsize(p)
+    else:
+        sz = min((last - first + 1) * 512, cap)
+    if sz > 0 and sz != (last - first + 1) * 512:
+        struct.pack_into("<Q", g, off + 40, first + sz // 512 - 1)
+open(dst, "wb").write(bytes(g))
+PY
+          xml="partition_$(date +%s).xml"
+          printf '<?xml version="1.0" encoding="UTF-8"?>\n<!-- stub partition list -->\n' > "$xml"
+          gpt_saved=1
+          echo "standard gpt table saved to pgpt.bin"
+          echo "skip saving sprd partition list packet"
+          echo "partition list saved to $xml"
+          echo "Total number of partitions: $(python3 -c "
+import struct
+g = open('fdl/pgpt.bin','rb').read()
+ent_lba, n_ent, ent_sz = struct.unpack_from('<Q', g, 512+0x48)[0], struct.unpack_from('<I', g, 512+0x50)[0], struct.unpack_from('<I', g, 512+0x54)[0]
+print(sum(1 for i in range(n_ent) if g[ent_lba*512+i*ent_sz:][:16] != b'\\x00'*16))")"
+          echo "Storage is emmc"
+          echo "Device is using slot a"
+        fi
+        # fidelity: dump_partition redirects any *nv1* read to the *nv2*
+        # mirror from offset 0x200 (skipping the NV header) — field-caught
+        # 2026-09-26 ('r l_fixnv1_a' printed 'Read Part Done:
+        # l_fixnv2_a+0x200'). Model exactly that, AFTER the GPT save.
+        case "$part" in
+          *nv1*)
+            part2="${part//1/2}"
+            echo "Read Part Done: $part2+0x200"
+            if [ ! -f "$STATE/$part2" ]; then echo "part not exist"; i=$((i+2)); continue; fi
+            # the dump FILE is named after the REQUESTED partition (dfile in
+            # the r dispatch), even though the bytes come from the mirror.
+            # Fidelity: mirror == main on healthy devices, so the main's file
+            # exists in state and is what gets dumped (minus the header).
+            if [ ! -f "$STATE/$part" ]; then echo "part not exist"; i=$((i+2)); continue; fi
+            if [ -f "$STATE/$part2.erased" ]; then
+              python3 -c "open('$part.bin','wb').write(b'\xAA'*$(stat -c%s "$STATE/$part2"))"
+            else
+              python3 -c "open('$part.bin','wb').write(open('$STATE/$part','rb').read()[0x200:])"
+            fi
+            i=$((i+2)); continue ;;
+        esac
+        if [ ! -f "$STATE/$part" ]; then echo "part not exist"; i=$((i+2)); continue; fi
+        echo "Read Part Done: $part+0x0"
+        # fidelity (field log 3): the REAL tool hardcodes a confirmation
+        # prompt on 'r userdata' even in one-shot mode — it does NOT
+        # auto-pass. Model it: read one line from stdin; anything but y/Y
+        # skips the read (and the kit's completion gate then fails the
+        # session, exactly as it did in the field).
+        if [ "$part" = "userdata" ]; then
+          if [ "${STUB_DECLINE_USERDATA:-0}" = "1" ]; then
+            ans=N
+          else
+            printf 'Answer "y" to confirm the "read userdata" command: '
+            read -r ans
+          fi
+          case "$ans" in
+            y|Y) ;;
+            *) echo "  (declined — userdata not read)"; i=$((i+2)); continue ;;
+          esac
+        fi
+        if [ -f "$STATE/$part.erased" ]; then
+          python3 -c "open('$part.bin','wb').write(b'\xAA'*$(stat -c%s "$STATE/$part"))"
+        elif [ "$part" = "miscdata" ] && [ -f "$STATE/.unlocked" ]; then
+          # fidelity: with the unlock marker set, the RAW partition content
+          # carries the unlocked flag shape (32B token + 16B hash + 16B hash)
+          python3 -c "
+d = bytearray(open('$STATE/miscdata','rb').read())
+d[0x2000:0x2020] = b'VerifiedBoot-UNLOCK-token-32-bytes-ok'
+d[0x2020:0x2030] = b'\x11'*16
+d[0x2030:0x2040] = b'\x11'*16
+open('$part.bin','wb').write(bytes(d))"
+        else
+          cp "$STATE/$part" "$part.bin"
+        fi
+        i=$((i+2)); continue ;;
+      e) part="${*:$((i+1)):1}"; echo "Erase Part Done: $part"; touch "$STATE/$part.erased"; i=$((i+2)); continue ;;
+      w)
+        part="${*:$((i+1)):1}"; f="${*:$((i+2)):1}"
+        # fidelity: real tool special-cases these in load_partition/_unify
+        case "$part" in
+          l_runtimenv*)
+            # load_partition ERASES runtimenv instead of writing it — and
+            # prints the ERASE line, not a write line (common.c source).
+            echo "Erase Part Done: $part"
+            touch "$STATE/$part.erased"; i=$((i+3)); continue ;;
+          calinv)
+            i=$((i+3)); continue ;;          # tool skips calinv silently
+          *fixnv*)
+            # NV-item protocol (load_nv_partition): device verifies crc/cs and
+            # stores its own byte stream — the raw flash content is NOT the
+            # file. The stub marks the partition re-nved, not byte-copied;
+            # the offline suites use this marker to prove the rollback NEVER
+            # issues a forbidden fixnv write (decision 10).
+            echo "Write NV_Part Done: $part"
+            touch "$STATE/$part.nvwritten"; rm -f "$STATE/$part.erased"
+            i=$((i+3)); continue ;;
+        esac
+        echo "Write Part Done: $part"
+        cp "$f" "$STATE/$part"; rm -f "$STATE/$part.erased"
+        # the unlock flag lives in miscdata: writing that partition clears it
+        [ "$part" = "miscdata" ] && rm -f "$STATE/.unlocked"
+        i=$((i+3)); continue ;;
+      read_part)
+        part="${*:$((i+1)):1}"; off="${*:$((i+2)):1}"; size="${*:$((i+3)):1}"; out="${*:$((i+4)):1}"
+        echo "Read Part Done: $part+0x$off"
+        # slice the NAMED partition's state (fidelity: the real tool reads
+        # whatever partition is requested — an earlier stub hardcoded
+        # miscdata here, which only worked because every caller used it)
+        python3 -c "
+import os
+d = open('$STATE/$part','rb').read()
+o = int('$off', 0); s = int('$size', 0)
+tail = d[o:o+s]
+if '$part' == 'miscdata' and os.path.exists('$STATE/.unlocked'):
+    tail = b'VerifiedBoot-UNLOCK' + b'\x00'*45  # 64 bytes total
+open('$out','wb').write(tail)"
+        i=$((i+5)); continue ;;
+      verbose) i=$((i+2)); continue ;;
+      *) i=$((i+1)); continue ;;
+    esac
+  fi
+  i=$((i+1))
+done
+echo "stub session end"
+exit 0
