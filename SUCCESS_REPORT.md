@@ -29,6 +29,20 @@ Magisk app: Installed — version <xxxxx>
 >
 ```
 
+## Optional userdata.img path — did you test it?
+
+This is the one path the maintainer left untested on hardware (DISCLAIMER
+item 4, guide chapter 6). If you exercised it, your answer is evidence for
+the next person; if you did not, say so plainly — both answers are records.
+
+Did you select YES when `./insure.sh` asked whether to capture userdata.img?
+
+- [ ] Backup and verification completed.
+- [ ] Restore completed after the factory reset.
+- [ ] Restored data was verified.
+- [ ] Not tested / not applicable.
+- [ ] Failed (describe the stage and attach relevant logs).
+
 ## Privacy note (so you can post with confidence)
 
 None of the above exposes personal data or your IMEI. Do NOT ever post the
