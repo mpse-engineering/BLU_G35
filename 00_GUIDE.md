@@ -4,13 +4,40 @@ Audience: anyone. Every keystroke is written out. Nothing is assumed.
 Total time: one focused hour for the unlock itself — plus a one-time
 multi-hour insurance run (chapter 6), which is not optional.
 
-> **Read this first — the four disclaimers.** Full text in `DISCLAIMERS.md`;
-> the short form: (1) like any firmware tool, you can brick your phone —
-> though everything demonstrated on this hardware was recoverable, and the
-> risk concentrates in *deviating* from the procedure; (2) make sure your
-> phone is the exact model; (3) this kit is the cleaned release of code that
-> was proven end-to-end on a real BLU G35; (4) when it works for you, report
-> back — that report is what gives the next person confidence.
+> **Read this first — the five disclaimers.** Full text in `DISCLAIMER.md`;
+> the short form: (1) firmware work can brick a phone; every software-reachable
+> failure encountered on the tested hardware was recovered, but that is not a
+> universal guarantee; (2) use the exact model and firmware; (3) the stock
+> rollback was tested twice, then the consolidated workflow was run end to end
+> in a third rooting run; (4) optional `userdata.img` capture/restore was not
+> selected during hardware tests — do not rely on it as your only backup;
+> (5) report your result so the next person has evidence.
+
+## At a glance: the full lifecycle
+
+```mermaid
+flowchart TD
+    A["Original BLU G35<br/>blank or already in use"] --> B["Back up personal data separately<br/>(recommended)"]
+    B --> C{"Include optional userdata.img?"}
+    C -- "NO" --> D["Insurance: three backup passes<br/>userdata.img omitted; prior user data not restored by kit"]
+    C -- "YES — not field-tested" --> E["Insurance: three backup passes<br/>including userdata.img"]
+    D --> F["Unlock bootloader<br/>(initial factory reset)"]
+    E --> F
+    F --> G["Root with Magisk"]
+    G --> H["Customize / use phone (optional)"]
+    H --> I["Restore stock firmware"]
+    I --> J["Relock bootloader"]
+    J --> K["Factory reset"]
+    K --> L{"Was userdata.img captured?"}
+    L -- "YES" --> M["Restore saved userdata.img<br/>after factory reset<br/>(not field-tested)"]
+    L -- "NO" --> N["Restore separate personal-data backup, if any"]
+    M --> O["BLU G35 back on stock software"]
+    N --> O
+```
+
+The diagram is an overview, not a substitute for the step-by-step gates. The
+optional `userdata.img` restore path has not been validated in the maintainer's
+physical test runs; see the personal-data notes below and chapter 6.
 
 ---
 
@@ -18,15 +45,15 @@ multi-hour insurance run (chapter 6), which is not optional.
 
 | word | meaning |
 |---|---|
-| **BootROM / BROM** | code burned into the chip at the factory. Cannot be changed by anything — any firmware, any OTA. Our entry point. It ignores the lock flag entirely; it is why this method always works. |
-| **download mode** | a phone state where the BootROM listens over USB. Reached by: power off (~10 s hold), hold **VOL_UP**, plug the cable. Works no matter what software state the phone is in. |
+| **BootROM / BROM** | code burned into the chip at the factory. Firmware and OTAs cannot rewrite it. This kit uses its download-mode path as the entry point; that does not make the method universal beyond the exact model/build this kit verifies. |
+| **download mode** | a phone state where the BootROM listens over USB. Reached by: power off (~10 s hold), hold **VOL_UP**, plug the cable. On the tested device, it remained reachable across every software failure state encountered; this is not a guarantee against arbitrary hardware failures. |
 | **fastboot** | the phone's own boot-menu flashing tool. On THIS phone its write command is broken (proven twice). This kit does not use it for writes — ever. |
 | **partition** | a named slice of the phone's storage (splloader, uboot_a, miscdata, …). Think "files that live below the filesystem". |
 | **slot a / slot b** | two copies of boot-critical partitions; the phone boots from the active one (yours: `a`). We patch both so it does not matter. |
 | **hash / sha256** | a fingerprint of a file. If one byte changes, the fingerprint changes. We hash before and after every write. |
 | **read-back** | after writing to the phone, we read the same region back and hash it. If it does not match what we sent, we stop. |
 | **spd_dump** | the one tool this kit needs (prepare.sh fetches and builds it from TomKing062/spreadtrum_flash at a pinned, field-certified source revision when `SPD_DUMP_HOME` is unset; export `SPD_DUMP_HOME` to use your own build). It talks to the BootROM in download mode. |
-| **insurance** | the kit's name for three complete firmware backups, verified against each other, plus one certified master copy. Your personal restore source and the USB health test. Chapter 6. |
+| **insurance** | the kit's name for three backup passes over the insured partition set, verification, and one certified master copy. `userdata.img` is optional; see chapter 6. It is your device-specific restore source and USB health test. |
 
 ---
 
@@ -36,12 +63,74 @@ multi-hour insurance run (chapter 6), which is not optional.
 - a USB **data** cable plugged directly into the computer (no hub) — and a
   spare if you have one; a bad cable is the single most common failure
 - a computer running **Linux** (see chapter 3 if you only have Windows)
-- ~120 GB free disk for the insurance backups (chapter 6 explains why)
+- budget about 120 GB for the full insurance run; actual needs depend on the
+  selected partition set and whether `userdata.img` is included (chapter 6)
 - the kit, acquired from the release repository — git clone (next chapter)
   or the release's ZIP
-- internet access ONCE, for the one-time spd_dump fetch+build — or a build
-  you already trust, exported as `SPD_DUMP_HOME` (chapter 2, step 2)
+- internet access: once, for the one-time spd_dump fetch+build (chapter 2,
+  step 2; skipped when you export a build you already trust as
+  `SPD_DUMP_HOME`) — and, when you reach the root step, one more for the
+  Magisk APK fetch in `./root_with_magisk.sh` (chapter 8) — skipped there
+  too if you hand over the APK yourself (`MAGISK_APK=`). Rooting is part
+  of the procedure; only the download is replaceable
 - `git`, `gcc`, `make` and the libusb-1.0 headers (for that one build)
+
+### If the phone already contains personal data — read before unlocking
+
+The unlock procedure performs a factory reset. Before starting, copy anything
+you need to keep off the phone and verify that the copied files can be opened.
+Keep an independent copy on a computer or external storage; do not rely on the
+kit's optional `userdata.img` path as your only backup.
+
+A practical user-managed backup is usually faster than capturing a full
+`userdata.img`:
+
+- **Photos, videos and documents:** copy `DCIM/`, `Pictures/`, `Movies/`,
+  `Documents/`, `Download/`, and any relevant app-specific folders to a
+  computer or external drive over USB. [LocalSend](https://localsend.org/)
+  is an optional open-source way to transfer selected files over a local
+  network.
+- **SMS/MMS, call logs and contacts:** [SMS Import / Export](https://f-droid.org/packages/com.github.tmo1.sms_ie/)
+  is an open-source, no-root option for supported data types. Its contacts
+  import/export is marked experimental upstream, so verify that the exported
+  contacts can actually be restored.
+- **Apps and their private data:** use each app's own export or backup
+  facility where available. [Neo Backup](https://github.com/NeoApplications/Neo-Backup)
+  can back up app data on a rooted device, but it requires root and therefore
+  is not a pre-unlock solution for an ordinary stock/unrooted BLU G35.
+
+No single app-based method preserves every app's private data. **Recommended
+default for a phone with existing data:** make and verify an independent backup,
+then select NO when the kit asks whether to capture `userdata.img`. This avoids
+the extra capture/verification work while keeping your separate backup as the
+data-restoration path. If you select YES, keep the independent backup anyway:
+the kit intends to capture and restore the image, but that optional path was
+not exercised in the maintainer's physical tests; see chapter 6. If you select
+NO, `userdata.img` is omitted and the kit's rollback will not restore the
+phone's previous user-data partition.
+
+### The tested device identity — check this BEFORE the backup phase
+
+| property | tested value |
+|---|---|
+| model (`ro.product.model`) | `G35` (BLU G35) |
+| firmware build (`ro.build.display.id`) | `UP1A.231005.007` |
+| kernel | `5.15.178-android13` (2025-04-15 build) |
+| SoC target (`uboot_log` target line) | `sp9863a_1h10_go` |
+| official/splloader.bin sha256 | `493b54241f201a03ba175752bea9345e987737340ec5f763645550280d3aa124` |
+| official/uboot.bin sha256 | `68c1b59986204ffada680d304c560839b6a188000b63f90c73a205d7381fb2a3` |
+| official/init_boot_a.bin sha256 | `d88fd220992deaf4df8c4543f5289621c3af00995818735cc89001d76dfb3e0d` |
+
+You never hash your own phone manually — `scripts/step02` fingerprints
+YOUR phone against the kit's shipped dumps (read-only, ~1 minute, before
+any write-capable command exists) and hard-fails on a mismatch with NO
+override, by design. But you can avoid wasting the multi-hour backup
+phase entirely: check the build ID in Settings → About phone BEFORE
+`./insure.sh`. A different build ID means this kit is not for your phone —
+do not begin, and tell us, so a kit variant can
+be built and field-verified. The dump hashes above are shipped inside the
+kit and re-verified by `./verify.sh` against the MANIFEST on every fresh
+copy — they are the reference side of step02's comparison.
 
 ---
 
@@ -134,9 +223,11 @@ Notes on the dependency, once:
 output to the terminal. An unconnected phone looks like a sitting
 `Waiting for dl_diag connection` line; a failure is printed, never buried.
 
-**Network**: the ONLY touch is the one-time spd_dump fetch in step 2 — and
-only when you did not export `SPD_DUMP_HOME` with your own build. Nothing
-else downloads; nothing phones home.
+**Network**: exactly two touches, both conditional: the one-time spd_dump
+fetch+build in step 2 (only when you did not export `SPD_DUMP_HOME` with
+your own build), and the Magisk APK fetch in chapter 8's
+`./root_with_magisk.sh` (only when you did not supply `MAGISK_APK=`).
+Nothing else downloads; nothing phones home.
 
 ---
 
@@ -210,7 +301,7 @@ prepare → setup → verify → insure → run (steps 00..08) → root (chapter
 | prepare | no | rebuild-proofs every patch artifact from the shipped firmware |
 | setup | no | verifies the spd_dump dependency (SPD_DUMP_HOME) |
 | verify | no | manifest + 28 artifact proofs + 13-scenario offline self-test |
-| **insure** | **READ-ONLY** | **3 complete backups, 3-way verified, certified master (chapter 6)** |
+| **insure** | **READ-ONLY** | **3 backup passes; key partitions verified across all three; certified master (chapter 6)** |
 | run step00–01 | no | environment preflight, package integrity |
 | step02 | **NO — read-only** | fingerprints YOUR firmware against the kit; mismatch = hard fail, no override |
 | step03 | no | RAM-boot proof of the patched SPL (nothing written); if it does not boot, up to TWO guided retries are offered |
@@ -250,32 +341,61 @@ not "just run the next one". The transcript is in `logs/<step>_<timestamp>.log`.
 
 ## 6. Insurance — why you do not skip this
 
-`./insure.sh` reads **every partition of your phone, three times** — into
+`./insure.sh` reads the insured partition set **three times** — into
 `backup1/`, `backup2/`, `backup3/` in the workspace — with a normal boot
 between sessions. Each backup is **one single download-mode session** (all
-~69 partitions in a row; one-shot sessions have no command limit), so you
+selected partitions in a row; one-shot sessions have no command limit), so you
 enter download mode three times total, not once per handful of partitions.
+During insurance, the kit asks whether to include `userdata.img`. **Recommended
+default:** back up important personal data separately and select NO. Choose YES
+only if you deliberately want to try the optional, unfield-tested image path
+and you have another verified backup.
+
+- **NO:** `userdata.img` is omitted from the backup set and certified master.
+  The kit's rollback cannot restore the phone's prior user-data partition;
+  restore a separate backup manually, if you made one.
+- **YES:** the kit captures `userdata.img` and runs its image-integrity checks
+  as part of the insurance process. Because user data can change between
+  boot-separated sessions, it is not required to be byte-identical across all
+  three sessions like the key partitions below. The saved image is intended
+  to be written back only **after** stock firmware is restored, the bootloader
+  is relocked, and the factory reset has completed.
+
+**Testing boundary:** The maintainer did not select YES for `userdata.img`
+when running the physical test cycles. The option is implemented using the
+same image capture/write path as other partitions, so the maintainer expects it
+to work, but the user-data-specific capture-and-restore path has not been
+field-tested end to end. Do not treat it as your only backup; preserve and
+verify an independent copy of anything important.
+
 Then it verifies:
 
 - **KEY partitions** (boot chain, modem/DSP firmware, factory NV, TrustOS):
   must be byte-identical across all three. Any difference = your USB path
   is unreliable → HALT, no override. Fix the hardware and re-run the failed
   session — the kit resumes, it does not restart.
-- **VOLATILE partitions** (logs, counters, userdata, cache, runtime NV):
-  legitimately change on boot. They are fully backed up, and excluded from
-  the comparison — that is why everything is still backed up three times
-  even though verification ignores some of it.
+- **VOLATILE partitions** (logs, counters, cache, runtime NV, and
+  `userdata.img` only when selected): legitimately change across boot-separated
+  sessions. They are captured where included, but excluded from the requirement
+  that KEY partitions be byte-identical across all three sessions. If the
+  userdata option is declined, `userdata.img` is omitted entirely rather than
+  retained for rollback.
 - **anything else**: you get a named warning and decide (typed YES).
 
 On pass it assembles `$BLU35_WORKSPACE/firmware/` — the **certified master**:
-your phone's own complete firmware, checksummed. This is the restore source
-for every partition, including the per-device NV data no kit could ever
-ship for you.
+checksummed copies of the partitions retained by the insurance configuration.
+This is the restore source for each captured/restorable partition, including
+per-device NV data no kit could ever ship for you. `userdata.img` is present
+only if you selected it during insurance.
 
-**The cost of safety, stated plainly:** this is the multi-hour, ~120 GB
-part. That is not an accident or waste — it is the price of "you cannot
-lose this phone". Safety is above anything. If you cannot afford the time
-or the disk, you are not ready to perform surgery on the phone.
+**The cost of safety, stated plainly:** the full insurance run is a
+multi-hour operation. Budget about 120 GB for the full partition set; actual
+storage and transfer time can be lower if optional `userdata.img` capture is
+omitted. That is not an accident or waste; it is the cost of establishing and
+checking a phone-specific recovery source. It reduces risk but cannot
+guarantee recovery from every possible hardware fault or unanticipated
+failure. Safety is above anything. If you cannot afford the time or disk,
+do not proceed.
 
 It is also the USB health test: three full reads move more data than the
 entire unlock ever will. A bad cable dies here, read-only, where it costs
@@ -297,16 +417,19 @@ starts it over if you want zero doubt.
 | `find port failed` / waits forever | not in download mode, or adb grabbed the device, or no permission | re-enter download mode; `adb kill-server`; try `sudo -E` |
 | `step02 ... does NOT match` | firmware revision differs from this kit | **stop.** No override exists. Do not improvise. |
 | insurance HALT on KEY partitions | cable/port unreliable | fix the hardware, `./insure.sh session2` (etc.) — it resumes |
-| a write step FAILs on a hash | the write did not land | stop; phone is fine — download mode and re-run that step |
+| a write step FAILs on a hash | the expected write/read-back state was not confirmed | stop; do not boot or continue; preserve the log and follow the documented recovery path / ask for help |
 | step03: "no boot" on the first attempt | a first no-boot is routine — the maintainer's "may need twice" applies to the RAM-boot too | answer y at the retry prompt (power-cycle, re-enter download mode); the step only hard-stops after 3 attempts, and its stop message names the exact log to paste |
 | Magisk shows "N/A" after root | wrong image or wrong slot | re-do chapter 8 with the correct Magisk-patched image |
 | a module bootloops the phone | bad module | hold **VOL-DOWN** through boot = Safe Mode (modules disabled), remove the module |
 | anything else | — | stop, paste `logs/<step>_*.log` |
 
-**Total-loss insurance:** everything the procedure modifies is restorable
-from your certified master (`firmware/`), hash-verified, via download mode.
-The BootROM itself cannot be damaged by software. There is no state this
-procedure can put the phone in that download mode cannot reach.
+**Recovery coverage for the tested procedure:** captured partitions that the
+procedure modifies are restored from the certified master (`firmware/`), with
+hash verification through download mode. On the tested device (chapter 1
+identity card), every software-reachable failure state encountered during
+development was recovered through download mode. This is demonstrated
+recovery coverage for the tested hardware and workflow, not a guarantee
+against hardware faults, uncaptured data, or failure modes not encountered.
 
 ---
 
@@ -356,8 +479,9 @@ recovery in order, with every gate printed:
    beside the certified master (`firmware/init_boot_X.ota-stock.bin`) with
    a written record (`OTA-STOCK.txt`) and the master's CHECKSUMS refreshed.
    The canonical master files stay the pre-OTA insurance snapshot —
-   `rollback_to_stock.sh` keeps its exact proven semantics (full box state
-   = the insured firmware).
+   `rollback_to_stock.sh` restores the stock partitions retained in that
+   master; optional `userdata.img` behavior is described in chapter 6 and
+   has not been field-tested.
 4. then it installs Magisk, patches THAT current-stock image in the Magisk
    app, and writes it through the gated writer — exactly like the normal
    mode, so the patched image matches the OTA'd system
@@ -404,7 +528,8 @@ image.)
   without thinking. If one lands anyway and root disappears:
   `./root_with_magisk.sh --ota` (chapter 8) reads the NEW stock init_boot
   off the phone, guards it, and re-roots from the current stock — one
-  command. The BootROM (and this kit) survive every OTA by design.
+  command. The BootROM entry point is not replaced by an OTA, but the stock
+  firmware does change; use the sanctioned `--ota` path described here.
 - **Safe Mode escape hatch:** VOL-DOWN held through boot disables all
   modules for that boot.
 - **Magisk updates** are in-app (*Install → Direct Install → reboot*);
@@ -420,9 +545,10 @@ The author's policy, offered as the recommended posture: **deny everything
 by default; an app gets nothing unless you explicitly granted it.** Root +
 Zygisk/LSPosed gives you the hooks to enforce it system-wide, including
 controlling which apps can see which packages. The one honest limit: fully
-de-Googling a device is achievable but fiddly — budget real time, and
-remember that on THIS device a bad experiment costs one download-mode
-recovery (~2 minutes), not the phone.
+de-Googling a device is achievable but fiddly — budget real time. On the
+tested device, software-reachable failures encountered during development
+were recovered through download mode; that history is not a guarantee for
+every possible failure.
 
 ---
 
@@ -432,20 +558,28 @@ Changed your mind, or returning the device? `./rollback_to_stock.sh`
 (requires the insurance stamp — the certified master is what makes this
 safe and per-device):
 
-- **Full box state**: pushes your complete stock firmware back
+- **Full box state**: restores the captured stock partitions
   (hash-verified per partition — this unroots by overwriting the Magisk
-  init_boot), then **relocks** the bootloader (a surgical 64-byte flag
-  write, with a snapshot kept as instant undo), then the factory reset
-  happens last. Final read-only confirmation: stock chain, locked, wiped.
-- **Unroot only**: stock init_boot back, root gone, bootloader stays
+  `init_boot`), then **relocks** the bootloader (a surgical 64-byte flag
+  write, with a snapshot kept as instant undo), then performs the required
+  factory reset. **Only after that reset**, if `userdata.img` was selected
+  during insurance, the saved image is written back. If you declined the
+  option, the kit cannot restore the phone's prior user-data partition; use
+  your separate backup, if any. The optional `userdata.img` restore path has
+  not been field-tested by the maintainer (chapter 6). Final read-only
+  confirmation checks the stock chain and locked state; the reset is completed
+  before any optional `userdata.img` restore.
+- **Unroot only**: stock `init_boot` back, root gone, bootloader stays
   unlocked, data untouched.
 
-There is no race and no one-way door: the BootROM ignores the lock flag
-(it always has — that is the method), so the cycle unlock ↔ relock works
-indefinitely, in both directions. No fuse exists in this method.
+The tested method uses the BootROM download-mode path regardless of the
+bootloader lock flag, allowing the tested unlock ↔ relock cycle to be
+repeated on this device. Do not generalize that result to untested hardware
+or firmware. No fuse was triggered during the tested cycles. On this BLU G35,
+the box-state rollback ran twice, followed by a successful rooting run after
+the fixes were consolidated (see `DISCLAIMER.md`, item 3).
 
-A note on the NV/calibration partitions (source-proven, field decisions
-9+10, see PUBLIC_KIT_NOTES.md in the DevKit): the rollback push
+A note on the NV/calibration partitions: the rollback push
 deliberately never WRITES and never VERIFIES `l_fixnv1/2_a/b` (radio
 calibration), `l_runtimenv1/2` (runtime NV), `calinv`, `persist`,
 `metadata`, `uboot_log`, `sysdumpdb` or `blackbox`. Calibration is

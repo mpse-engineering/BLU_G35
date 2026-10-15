@@ -101,15 +101,18 @@ fi
 echo "run — BLU G35 (SC9863A) bootloader unlock, full sequence"
 echo
 cat <<'DISC'
-THE FOUR DISCLAIMERS (full text: DISCLAIMER.md — read it before this):
+THE FIVE DISCLAIMERS (full text: DISCLAIMER.md — read it before this):
   1) Like any phone firmware tool, you can brick your phone. Everything
      demonstrated on this hardware was recoverable via download mode, and
      the real risk concentrates in DEVIATING from the procedure.
   2) Make sure your phone is the exact model. step02 hard-fails on any
      firmware mismatch, with no override, by design.
-  3) This kit is the cleaned release of code proven end-to-end on a real
-     BLU G35 (see DISCLAIMER.md for the precise lineage).
-  4) When this works for you, report back (./make_report.sh). That report
+  3) This code is the exact code used to unlock, root, relock twice on
+     a real BLU G35 — runs #2 and #3 (see DISCLAIMER.md for the full
+     statement and the offline proofs).
+  4) The optional userdata.img capture/restore path was not field-tested
+     on the maintainer's hardware — do not rely on it as your only backup.
+  5) When this works for you, report back (./make_report.sh). That report
      is what gives the next person confidence to start.
 DISC
 echo
